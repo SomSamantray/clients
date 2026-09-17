@@ -2,7 +2,10 @@ import { mock } from "jest-mock-extended";
 import { Subject } from "rxjs";
 
 import { FeatureFlag } from "@bitwarden/common/enums/feature-flag.enum";
-import { SharedUnlockPeerService } from "@bitwarden/common/key-management/shared-unlock";
+import {
+  PeerLockState,
+  SharedUnlockPeerService,
+} from "@bitwarden/common/key-management/shared-unlock";
 import { ConfigService } from "@bitwarden/common/platform/abstractions/config/config.service";
 import { LogService } from "@bitwarden/common/platform/abstractions/log.service";
 import { UnlockEvent, UnlockMethod, UnlockService } from "@bitwarden/unlock";
@@ -10,7 +13,7 @@ import { UserId } from "@bitwarden/user-core";
 
 import { CliIpcService } from "../platform/services/cli-ipc.service";
 
-import { CliSharedUnlockService } from "./cli-shared-unlock.service";
+import { CliSharedUnlockService, REMOTE_UNLOCK_TIMEOUT_MS } from "./cli-shared-unlock.service";
 
 describe("CliSharedUnlockService", () => {
   let sut: CliSharedUnlockService;
@@ -23,12 +26,15 @@ describe("CliSharedUnlockService", () => {
 
   const userId = "user-id" as UserId;
   let unlocked: Subject<UnlockEvent>;
+  let reportedStates: Subject<PeerLockState>;
 
   beforeEach(() => {
     jest.clearAllMocks();
 
     unlocked = new Subject<UnlockEvent>();
     unlockService.unlocked$ = unlocked.asObservable();
+    reportedStates = new Subject<PeerLockState>();
+    peerService.peerState$.mockReturnValue(reportedStates.asObservable());
     configService.getFeatureFlag.mockResolvedValue(true);
     peerService.start.mockResolvedValue(undefined);
 
@@ -92,7 +98,7 @@ describe("CliSharedUnlockService", () => {
     it("ignores an unlock this device performed itself", async () => {
       const waiting = sut.waitForRemoteUnlock(userId);
       unlocked.next({ userId, method: UnlockMethod.MasterPassword });
-      jest.advanceTimersByTime(3_000);
+      jest.advanceTimersByTime(REMOTE_UNLOCK_TIMEOUT_MS);
 
       await expect(waiting).resolves.toBe(false);
     });
@@ -100,16 +106,31 @@ describe("CliSharedUnlockService", () => {
     it("ignores an unlock for another user", async () => {
       const waiting = sut.waitForRemoteUnlock(userId);
       unlocked.next({ userId: "other-user" as UserId, method: UnlockMethod.SharedUnlock });
-      jest.advanceTimersByTime(3_000);
+      jest.advanceTimersByTime(REMOTE_UNLOCK_TIMEOUT_MS);
 
       await expect(waiting).resolves.toBe(false);
     });
 
     it("resolves false when the desktop app never answers", async () => {
       const waiting = sut.waitForRemoteUnlock(userId);
-      jest.advanceTimersByTime(3_000);
+      jest.advanceTimersByTime(REMOTE_UNLOCK_TIMEOUT_MS);
 
       await expect(waiting).resolves.toBe(false);
+    });
+
+    it("resolves false as soon as the desktop reports the user locked", async () => {
+      const waiting = sut.waitForRemoteUnlock(userId);
+      reportedStates.next(PeerLockState.Locked);
+
+      await expect(waiting).resolves.toBe(false);
+    });
+
+    it("keeps waiting while the desktop reports the user unlocked, until the unlock lands", async () => {
+      const waiting = sut.waitForRemoteUnlock(userId);
+      reportedStates.next(PeerLockState.Unlocked);
+      unlocked.next({ userId, method: UnlockMethod.SharedUnlock });
+
+      await expect(waiting).resolves.toBe(true);
     });
   });
 

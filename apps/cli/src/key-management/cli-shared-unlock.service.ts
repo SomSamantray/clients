@@ -1,7 +1,10 @@
-import { catchError, filter, firstValueFrom, map, of, timeout } from "rxjs";
+import { catchError, filter, firstValueFrom, map, merge, of, timeout } from "rxjs";
 
 import { FeatureFlag } from "@bitwarden/common/enums/feature-flag.enum";
-import { SharedUnlockPeerService } from "@bitwarden/common/key-management/shared-unlock";
+import {
+  PeerLockState,
+  SharedUnlockPeerService,
+} from "@bitwarden/common/key-management/shared-unlock";
 import { ConfigService } from "@bitwarden/common/platform/abstractions/config/config.service";
 import { LogService } from "@bitwarden/common/platform/abstractions/log.service";
 import { UserId } from "@bitwarden/common/types/guid";
@@ -15,7 +18,7 @@ import { CliIpcService } from "../platform/services/cli-ipc.service";
  * The peer announces itself as part of starting, so this only covers a single desktop hop — well
  * short of the protocol's 5s sync interval.
  */
-const REMOTE_UNLOCK_TIMEOUT_MS = 15_000;
+export const REMOTE_UNLOCK_TIMEOUT_MS = 15_000;
 
 /**
  * The CLI's participation in the shared unlock protocol, which lets it borrow the desktop app's
@@ -57,13 +60,25 @@ export class CliSharedUnlockService {
   /**
    * Waits for the desktop app to push over an unlocked state for the user.
    *
+   * Settles as soon as the desktop reports the user locked, which it does within milliseconds of
+   * this peer announcing itself. The timeout is then only reached when the desktop does not answer
+   * at all, rather than on every command run against a locked desktop.
+   *
    * @returns whether the vault was unlocked by a peer within {@link REMOTE_UNLOCK_TIMEOUT_MS}.
    */
   async waitForRemoteUnlock(userId: UserId): Promise<boolean> {
+    const unlocked$ = this.unlockService.unlocked$.pipe(
+      filter((event) => event.userId === userId && event.method === UnlockMethod.SharedUnlock),
+      map(() => true),
+    );
+
+    const reportedLocked$ = this.peerService
+      .peerState$(userId)
+      .pipe(filter((lockState) => lockState === PeerLockState.Locked))
+      .pipe(map(() => false));
+
     return await firstValueFrom(
-      this.unlockService.unlocked$.pipe(
-        filter((event) => event.userId === userId && event.method === UnlockMethod.SharedUnlock),
-        map(() => true),
+      merge(unlocked$, reportedLocked$).pipe(
         timeout({ first: REMOTE_UNLOCK_TIMEOUT_MS }),
         catchError(() => of(false)),
       ),

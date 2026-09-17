@@ -1,5 +1,5 @@
 import { mock, MockProxy } from "jest-mock-extended";
-import { BehaviorSubject, of } from "rxjs";
+import { BehaviorSubject, firstValueFrom, of, timeout } from "rxjs";
 
 import { SharedUnlockClient, SharedUnlockPeer } from "@bitwarden/sdk-internal";
 import { LockService, LockSource, UnlockMethod, UnlockService } from "@bitwarden/unlock";
@@ -17,6 +17,8 @@ import { UserId } from "../../types/guid";
 import { VaultTimeoutSettingsService } from "../vault-timeout/abstractions/vault-timeout-settings.service";
 
 import { DefaultSharedUnlockPeerService } from "./default-shared-unlock-peer.service";
+import { PeerLockState } from "./peer-state";
+import { JsSharedUnlockDriver } from "./shared-unlock-driver";
 import { SharedUnlockSettingsService } from "./shared-unlock-settings.service";
 
 describe("DefaultSharedUnlockPeerService", () => {
@@ -32,6 +34,7 @@ describe("DefaultSharedUnlockPeerService", () => {
   let unlockService: MockProxy<UnlockService>;
   let configService: MockProxy<ConfigService>;
   let peer: MockProxy<SharedUnlockPeer>;
+  let driver: JsSharedUnlockDriver;
 
   let featureEnabled: BehaviorSubject<boolean>;
   let sharingDisabled: BehaviorSubject<boolean>;
@@ -55,7 +58,10 @@ describe("DefaultSharedUnlockPeerService", () => {
       settingsService,
       unlockService,
       configService,
-      () => peer,
+      (_ipcClient, sharedUnlockDriver) => {
+        driver = sharedUnlockDriver;
+        return peer;
+      },
     );
   }
 
@@ -174,6 +180,32 @@ describe("DefaultSharedUnlockPeerService", () => {
       allowDesktop.next(false);
 
       expect(peer.set_destinations).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("peer states", () => {
+    it("reports what a peer said about a user, replaying it for a later subscriber", async () => {
+      platformUtilsService.getClientType.mockReturnValue(ClientType.Cli);
+      const sut = build();
+      await sut.start();
+
+      // The peer's introductory reply can land before anything subscribes.
+      await driver.on_peer_state(asUuid(userId), PeerLockState.Locked);
+
+      await expect(firstValueFrom(sut.peerState$(userId))).resolves.toBe(PeerLockState.Locked);
+    });
+
+    it("keeps one user's reports out of another's", async () => {
+      platformUtilsService.getClientType.mockReturnValue(ClientType.Cli);
+      const sut = build();
+      await sut.start();
+
+      await driver.on_peer_state(asUuid(userId), PeerLockState.Unlocked);
+
+      const other = "0b1b1b0b-1b0b-4a1e-9c3b-8796a0d1a4b0" as UserId;
+      await expect(
+        firstValueFrom(sut.peerState$(other).pipe(timeout({ first: 1, with: () => of("none") }))),
+      ).resolves.toBe("none");
     });
   });
 

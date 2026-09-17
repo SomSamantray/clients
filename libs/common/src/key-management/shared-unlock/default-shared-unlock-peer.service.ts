@@ -5,6 +5,7 @@ import {
   firstValueFrom,
   map,
   Observable,
+  ReplaySubject,
   Subscription,
 } from "rxjs";
 
@@ -22,6 +23,7 @@ import { IpcService } from "../../platform/ipc";
 import { UserId } from "../../types/guid";
 import { VaultTimeoutSettingsService } from "../vault-timeout/abstractions/vault-timeout-settings.service";
 
+import { PeerLockState } from "./peer-state";
 import { JsSharedUnlockDriver } from "./shared-unlock-driver";
 import { SharedUnlockPeerService } from "./shared-unlock-peer.service";
 import { SharedUnlockSettingsService } from "./shared-unlock-settings.service";
@@ -49,6 +51,12 @@ const defaultPeerFactory: SharedUnlockPeerFactory = (ipcClient, driver) =>
 
 export class DefaultSharedUnlockPeerService implements SharedUnlockPeerService {
   private peer: SharedUnlockPeer | null = null;
+  /**
+   * The last state each user's peers reported, per user. Replayed rather than live, because the
+   * introductory reply a peer sends on connecting can land before anything subscribes — a CLI
+   * process asks only after starting its peer, which is what triggers that reply.
+   */
+  private readonly reportedStates = new Map<UserId, ReplaySubject<PeerLockState>>();
   /** The live destination subscription per account, which is also the set of accounts seen so far. */
   private readonly destinationSubscriptions = new Map<UserId, Subscription>();
   private accountsSubscription: Subscription | null = null;
@@ -74,6 +82,7 @@ export class DefaultSharedUnlockPeerService implements SharedUnlockPeerService {
       this.platformUtilsService,
       this.vaultTimeoutSettingsService,
       this.environmentService,
+      (state) => this.reportedState(state.userId).next(state.lockState),
     );
 
     const peer = this.peerFactory(this.ipcService.client, sharedUnlockDriver);
@@ -124,6 +133,20 @@ export class DefaultSharedUnlockPeerService implements SharedUnlockPeerService {
       subscription.unsubscribe();
     }
     this.destinationSubscriptions.clear();
+  }
+
+  peerState$(userId: UserId): Observable<PeerLockState> {
+    return this.reportedState(userId).asObservable();
+  }
+
+  private reportedState(userId: UserId): ReplaySubject<PeerLockState> {
+    let reported = this.reportedStates.get(userId);
+    if (reported == null) {
+      reported = new ReplaySubject<PeerLockState>(1);
+      this.reportedStates.set(userId, reported);
+    }
+
+    return reported;
   }
 
   /**
