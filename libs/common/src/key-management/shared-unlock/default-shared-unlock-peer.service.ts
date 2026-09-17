@@ -220,9 +220,6 @@ export class DefaultSharedUnlockPeerService implements SharedUnlockPeerService {
       this.sharedUnlockSettingsService.allowSharingUnlockStateWithWeb$(userId),
     ]).pipe(
       map(([featureEnabled, sharingDisabled, allowDesktop, allowWeb]) => {
-        // TEMPORARY: SharedUnlockPart2 gate disabled for local testing. Restore before committing.
-        featureEnabled = true;
-
         if (!featureEnabled || sharingDisabled) {
           return NO_DESTINATIONS;
         }

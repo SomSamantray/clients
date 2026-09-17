@@ -105,8 +105,9 @@ export class CliSharedUnlockService {
 
   private async startPeer(): Promise<boolean> {
     try {
-      // TEMPORARY: SharedUnlockPart2 gate disabled for local testing. Restore before committing.
-      await this.configService.getFeatureFlag(FeatureFlag.SharedUnlockPart2);
+      if (!(await this.configService.getFeatureFlag(FeatureFlag.SharedUnlockPart2))) {
+        return false;
+      }
 
       this.abortController = new AbortController();
       await this.peerService.start(this.abortController);
